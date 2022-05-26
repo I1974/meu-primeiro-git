@@ -1,0 +1,834 @@
+declare
+  v_empresa         number    := :p1;
+  v_usuario         number    := :p2;
+  v_item            varchar2(20)  := :p3;
+  v_versao          varchar2(20)  := :p4;
+  v_grupo_despesas  number    := :p5;
+  v_custo_material  char(1)      := :p6;
+  v_tabela_preco    number    := :p7;
+  v_valor_moeda     number    := :p8;
+  v_inclui_tabela   char(1)      := :p9;
+
+  v_tem             number := 0;
+  v_formula         asdcomando.comando_sql%type;
+  v_formula_origem  asdcomando.comando_sql%type;
+  v_campo_origem    varchar2(30);
+  v_inicio_campo    number;
+  v_tam_campo       number;
+  v_campo           varchar2(30);
+  v_contador        number;
+  v_temp            varchar2(20);
+  v_decimais        number;
+  v_tipo            char(1);
+  v_situacao        char(1);       
+
+  total_mp        number(15,5) := 0;
+  total_mp_medio  number(15,5) := 0;
+  total_mp_rep    number(15,5) := 0;
+  total_ic        number(15,5) := 0;
+  total_ic_medio  number(15,5) := 0;
+  total_ic_rep    number(15,5) := 0;
+  total_proc      number(15,5) := 0;
+  total_acess_rateado number(15,5) := 0;
+  total_sa        number(15,5) := 0;
+  total_ppv       number(15,5) := 0;
+  total_pf        number(15,5) := 0;
+  total_pl        number(15,5) := 0;
+  total_vf        number(15,5) := 0;
+  total_pc        number(15,5) := 0;
+
+  mll             number(15,5) := 0;
+  pv              number(15,5) := 0;
+  mlb             number(15,5) := 0;
+  ctmp            number(15,5) := 0;
+  ctp             number(15,5) := 0;
+  ctsa            number(15,5) := 0;
+  ctic            number(15,5) := 0;
+  ctpp            number(15,5) := 0;
+  cta             number(15,5) := 0;
+  ctf             number(15,5) := 0;
+  pdap            number(15,5) := 0;
+  vdaf            number(15,5) := 0;
+  dap             number(15,5) := 0;
+  ctb             number(15,5) := 0;
+  lb              number(15,5) := 0;
+  dal             number(15,5) := 0;
+  ll              number(15,5) := 0;
+  pdal            number(15,5) := 0;
+  pdac            number(15,5) := 0;
+  pvf             number(15,5) := 0;
+  dac             number(15,5) := 0;
+  ctb_medio       number(15,5) := 0;
+  ctb_rep         number(15,5) := 0;
+  ctb_calc        number(15,5) := 0;
+  caven           number(15,5) := 0;
+
+  quantidade      number(15,5) := 1;
+  preco_venda_final number(15,5) := 1;
+
+  cursor c_desppadrao is select tipo_valor,
+                                fpvgrutpdespadicit.valor
+                           from fpvgrutpdespadicit, fpvgrutpdespadic, fpvtpdespadic
+                          where fpvgrutpdespadic.empresa = v_empresa
+                            and fpvgrutpdespadic.padrao_fp = 'S'
+                            and fpvgrutpdespadic.empresa = fpvgrutpdespadicit.empresa
+                            and fpvgrutpdespadic.codigo = fpvgrutpdespadicit.grupo
+                            and fpvgrutpdespadicit.empresa = fpvtpdespadic.empresa
+                            and fpvgrutpdespadicit.tipo_custo = fpvtpdespadic.tipo_custo
+                            and fpvgrutpdespadicit.codigo_quebra = fpvtpdespadic.codigo_quebra;
+
+  cursor c_despfixa is select tipo_valor,
+                              valor * coeficiente_acrescimo valor
+             from pcpversaodespadic
+              where pcpversaodespadic.empresa = v_empresa
+              and pcpversaodespadic.produto = v_item
+              and pcpversaodespadic.versao  = v_versao;
+
+  cursor c_formula is select fpvfpformula.campo, fpvfpformula.campo_origem, asdcomando.comando_sql formula
+                        from fpvfpformula, asdcomando
+                       where fpvfpformula.empresa = v_empresa
+                         and asdcomando.comando = fpvfpformula.comando_dinamico
+                       order by sequencia_calculo;
+begin
+
+  -- Margem de lucro para o item
+  select nvl(pcpversao.margem_lucro,0)  into mll
+    from pcpversao, estitem
+   where pcpversao.empresa = v_empresa
+     and pcpversao.produto = v_item
+     and pcpversao.versao  = v_versao
+     and pcpversao.empresa = estitem.empresa
+     and pcpversao.produto = estitem.codigo;
+
+  --Total do custo com a estrutura do item (materia-prima)
+  select count(*) into v_tem
+    from fpvfpformula
+   where empresa = v_empresa
+     and campo_origem = 'total_mp';
+
+  v_tipo := 'C';
+  if v_tem > 0 then
+    select tipo into v_tipo
+      from fpvfpformula
+     where empresa = v_empresa
+       and campo_origem = 'total_mp';
+  end if;
+       
+  --Se for formula do tipo SQL
+  if v_tipo = 'S' then
+    select asdcomando.comando_sql into v_formula
+      from fpvfpformula, asdcomando
+     where fpvfpformula.empresa = v_empresa
+       and asdcomando.comando = fpvfpformula.comando_dinamico
+       and fpvfpformula.campo_origem = 'total_mp';
+
+    execute immediate v_formula using v_empresa, 1, v_item, v_versao, out total_mp;
+    execute immediate v_formula using v_empresa, 1, v_item, v_versao, out total_mp_medio;
+    execute immediate v_formula using v_empresa, 1, v_item, v_versao, out total_mp_rep;
+  else
+    select nvl(sum(((decode(pcpgrupocomp.tipo_consumo,'P',(pcpcomponente.quantidade_aplicada / 100), pcpcomponente.quantidade_aplicada) * 
+                     (pcpgrupocomp.perc_cobertura/100))* 
+                    decode(v_custo_material, 'U', nvl(estiteminfad.preco_aquisicao,0), 'R', 
+                           decode(nvl(estiteminfad.custo_reposicao,0),0,nvl(estiteminfad.preco_aquisicao,0),nvl(estiteminfad.custo_reposicao,0)),
+                           (select nvl(sum(decode(nvl(valor / decode(quantidade,0,1,quantidade),0),0,nvl(decode(v_custo_material,'U',
+																										   (select max(preco_aquisicao)
+																											  from estiteminfad
+																											 where empresa = pcpcomponente.empresa
+																											   and item = pcpcomponente.componente
+																											   and versao = pcpcomponente.versao), 
+																											
+																											(select max(valor/quantidade)
+																											   from estmovim
+																											  where empresa = pcpcomponente.empresa
+																												and item = pcpcomponente.componente
+																												and versao = pcpcomponente.versao
+																											    and tipo_movto in (select codigo from esttpmovto where tipo_movto = 'S')
+																												and data_movto = (select max(data_movto)
+																																	from estmovim mov
+																																   where mov.empresa = estmovim.empresa
+																																	 and mov.item = estmovim.item
+																																	 and mov.versao = estmovim.versao
+																																	 and mov.tipo_movto in (select codigo from esttpmovto where tipo_movto = 'S')
+																																	 and mov.valor > 0))),0),valor / decode(quantidade,0,1,quantidade))),0)
+                              from estsaldos, estitem, esttpitem
+                             where pcpcomponente.empresa = estsaldos.empresa(+)
+                               and pcpcomponente.componente = estsaldos.item(+)
+                               and pcpcomponente.versao = estsaldos.versao(+)
+                               and pcpcomponente.empresa = estitem.empresa
+                               and pcpcomponente.componente = estitem.codigo
+                               and estitem.empresa = esttpitem.empresa
+                               and estitem.tipo_item = esttpitem.codigo
+                               and estsaldos.deposito(+) = esttpitem.deposito_padrao)) * nvl(pcpcomponente.coeficiente_acrescimo,1))),0),
+           nvl(sum(((decode(pcpgrupocomp.tipo_consumo,'P',(pcpcomponente.quantidade_aplicada / 100), pcpcomponente.quantidade_aplicada) * 
+                     (pcpgrupocomp.perc_cobertura/100)) *  
+                     (select nvl(sum(decode(nvl(valor / decode(quantidade,0,1,quantidade),0),0,nvl(decode(v_custo_material,'U',
+																										   (select max(preco_aquisicao)
+																											  from estiteminfad
+																											 where empresa = pcpcomponente.empresa
+																											   and item = pcpcomponente.componente
+																											   and versao = pcpcomponente.versao), 
+																											
+																											(select max(valor/quantidade)
+																											   from estmovim
+																											  where empresa = pcpcomponente.empresa
+																												and item = pcpcomponente.componente
+																												and versao = pcpcomponente.versao
+																											    and tipo_movto in (select codigo from esttpmovto where tipo_movto = 'S')
+																												and data_movto = (select max(data_movto)
+																																	from estmovim mov
+																																   where mov.empresa = estmovim.empresa
+																																	 and mov.item = estmovim.item
+																																	 and mov.versao = estmovim.versao
+																																	 and mov.tipo_movto in (select codigo from esttpmovto where tipo_movto = 'S')
+																																	 and mov.valor > 0))),0),valor / decode(quantidade,0,1,quantidade))),0)
+                        from estsaldos, estitem, esttpitem
+                       where pcpcomponente.empresa = estsaldos.empresa(+)
+                         and pcpcomponente.componente = estsaldos.item(+)
+                         and pcpcomponente.versao = estsaldos.versao(+)
+                         and pcpcomponente.empresa = estitem.empresa
+                         and pcpcomponente.componente = estitem.codigo
+                         and estitem.empresa = esttpitem.empresa
+                         and estitem.tipo_item = esttpitem.codigo
+                         and estsaldos.deposito(+) = esttpitem.deposito_padrao)) * nvl(pcpcomponente.coeficiente_acrescimo,1)),0),
+
+           sum((decode(pcpgrupocomp.tipo_consumo,'P',(pcpcomponente.quantidade_aplicada / 100), pcpcomponente.quantidade_aplicada) * 
+                     (pcpgrupocomp.perc_cobertura/100)) *  
+                     (select nvl(max(preco_aquisicao),0)
+                        from estiteminfad
+                       where empresa = pcpcomponente.empresa
+                         and item = pcpcomponente.componente
+                         and versao = pcpcomponente.versao))
+
+       into total_mp, total_mp_medio, total_mp_rep
+      from pcpversao pcpversaoC, pcpversao, pcpcomponente, pcpgrupocomp, estiteminfad, esttpitem, estitem
+     where pcpversao.empresa = v_empresa
+       and pcpversao.produto = v_item
+       and pcpversao.versao  = v_versao
+       and pcpversao.empresa = pcpcomponente.empresa
+       and pcpversao.composicao = pcpcomponente.composicao
+       and pcpcomponente.empresa = estitem.empresa
+       and pcpcomponente.componente = estitem.codigo
+       and pcpcomponente.empresa   = pcpversaoC.empresa
+       and pcpcomponente.componente = pcpversaoC.produto
+       and pcpcomponente.versao     = pcpversaoC.versao
+       and pcpcomponente.empresa = pcpgrupocomp.empresa
+       and pcpcomponente.composicao = pcpgrupocomp.composicao
+       and pcpcomponente.seq_grupo = pcpgrupocomp.seq_grupo
+       and estitem.empresa   = esttpitem.empresa
+       and estitem.tipo_item = esttpitem.codigo
+       and pcpversaoC.empresa = estiteminfad.empresa(+)
+       and pcpversaoC.produto = estiteminfad.item(+)
+       and pcpversaoC.versao  = estiteminfad.versao(+)
+       and esttpitem.prod_mat = 'M' ;
+  end if;
+
+  --Se o item calculado for material, pega o preco de aquisic?o ou de custo para o calculo
+  if nvl(total_mp,0) = 0 then
+    select sum(decode(v_custo_material, 'U', nvl(estiteminfad.preco_aquisicao,0), 'R', nvl(estiteminfad.custo_reposicao,0),(select nvl(sum(valor / decode(quantidade,0,1,quantidade)),0)
+                                                                                 from estsaldos, estitem, esttpitem
+                                                                                where estsaldos.empresa = v_empresa
+                                                                                  and estsaldos.item = v_item
+                                                                                  and estsaldos.versao = v_versao
+                                                                                  and estsaldos.empresa = estitem.empresa
+                                                                                  and estsaldos.item = estitem.codigo
+                                                                                  and estitem.empresa = esttpitem.empresa
+                                                                                  and estitem.tipo_item = esttpitem.codigo
+                                                                                  and estsaldos.deposito = esttpitem.deposito_padrao))),
+           sum((select nvl(sum(valor / decode(quantidade,0,1,quantidade)),0)
+                  from estsaldos, estitem, esttpitem
+                 where estsaldos.empresa = v_empresa
+                   and estsaldos.item = v_item
+                   and estsaldos.versao = v_versao
+                   and estsaldos.empresa = estitem.empresa
+                   and estsaldos.item = estitem.codigo
+                   and estitem.empresa = esttpitem.empresa
+                   and estitem.tipo_item = esttpitem.codigo                   
+                   and estsaldos.deposito = esttpitem.deposito_padrao)),
+
+           sum(nvl(estiteminfad.custo_reposicao,0))                   
+      into total_mp, total_mp_medio, total_mp_rep
+      from estiteminfad, esttpitem, estitem
+     where estitem.empresa = v_empresa
+       and estitem.codigo = v_item
+       and estitem.empresa   = esttpitem.empresa
+       and estitem.tipo_item = esttpitem.codigo
+       and estitem.empresa = estiteminfad.empresa(+)
+       and estitem.codigo = estiteminfad.item(+)
+       and estiteminfad.versao(+) = v_versao
+       and esttpitem.prod_mat = 'M' ;
+  end if;
+
+  --Total do custo com a estrutura do item (produtos em elaborac?o/itens comerciais)
+  select count(*) into v_tem
+    from fpvfpformula
+   where empresa = v_empresa
+     and campo_origem = 'total_ic';
+
+  v_tipo := 'C';
+  if v_tem > 0 then
+    select tipo into v_tipo
+      from fpvfpformula
+     where empresa = v_empresa
+       and campo_origem = 'total_ic';
+  end if;
+
+  --Se for formula do tipo SQL
+  if v_tipo = 'S' then
+      
+    select asdcomando.comando_sql into v_formula
+      from fpvfpformula, asdcomando
+     where fpvfpformula.empresa = v_empresa
+       and asdcomando.comando = fpvfpformula.comando_dinamico
+       and fpvfpformula.campo_origem = 'total_ic';       
+
+    execute immediate v_formula using v_empresa, 1, v_item, v_versao, out total_ic;
+    execute immediate v_formula using v_empresa, 1, v_item, v_versao, out total_ic_medio;
+    execute immediate v_formula using v_empresa, 1, v_item, v_versao, out total_ic_rep;
+  else
+    select nvl(sum(((decode(pcpgrupocomp.tipo_consumo,'P',(pcpcomponente.quantidade_aplicada / 100), pcpcomponente.quantidade_aplicada)  * 
+                    (pcpgrupocomp.perc_cobertura/100)) *  decode(nvl(pcpversaoC.preco_venda,0),0,pcpversaoC.custo_calculado, pcpversaoC.preco_venda)) * nvl(pcpcomponente.coeficiente_acrescimo,1)),0),
+           nvl(sum((decode(pcpgrupocomp.tipo_consumo,'P',(pcpcomponente.quantidade_aplicada / 100), pcpcomponente.quantidade_aplicada) * 
+                   (pcpgrupocomp.perc_cobertura/100)) *  nvl(pcpversaoC.custo_calculado_medio,0) * nvl(pcpcomponente.coeficiente_acrescimo,1)),0),
+           nvl(sum((decode(pcpgrupocomp.tipo_consumo,'P',(pcpcomponente.quantidade_aplicada / 100), pcpcomponente.quantidade_aplicada) * 
+                   (pcpgrupocomp.perc_cobertura/100)) *  nvl(pcpversaoC.custo_calculado_reposicao,0) * nvl(pcpcomponente.coeficiente_acrescimo,1)),0)
+      into total_ic, total_ic_medio, total_ic_rep
+      from pcpversao pcpversaoC, pcpversao, pcpgrupocomp, pcpcomponente, esttpitem, estitem
+     where pcpversao.empresa = v_empresa
+       and pcpversao.produto = v_item
+       and pcpversao.versao  = v_versao
+       and pcpversao.empresa = pcpcomponente.empresa
+       and pcpversao.composicao = pcpcomponente.composicao
+       and pcpcomponente.empresa = estitem.empresa
+       and pcpcomponente.componente = estitem.codigo
+       and pcpcomponente.empresa   = pcpversaoC.empresa
+       and pcpcomponente.componente = pcpversaoC.produto
+       and pcpcomponente.versao     = pcpversaoC.versao
+       and pcpcomponente.empresa = pcpgrupocomp.empresa
+       and pcpcomponente.composicao = pcpgrupocomp.composicao
+       and pcpcomponente.seq_grupo = pcpgrupocomp.seq_grupo
+       and estitem.empresa   = esttpitem.empresa
+       and estitem.tipo_item = esttpitem.codigo
+       and esttpitem.prod_mat = 'P';
+  end if;
+  
+  --Total do custo com o processo pelos recursos
+  select count(*) into v_tem
+    from fpvfpformula
+   where empresa = v_empresa
+     and campo_origem = 'total_proc';
+
+  v_tipo := 'C';
+  if v_tem > 0 then
+    select tipo into v_tipo
+      from fpvfpformula
+     where empresa = v_empresa
+       and campo_origem = 'total_proc';
+  end if;
+
+  --Se for formula do tipo SQL
+  if v_tipo = 'S' then
+       
+    select asdcomando.comando_sql into v_formula
+      from fpvfpformula, asdcomando
+     where fpvfpformula.empresa = v_empresa
+       and asdcomando.comando = fpvfpformula.comando_dinamico
+       and fpvfpformula.campo_origem = 'total_proc';        
+
+    execute immediate v_formula using v_empresa, 1, v_item, v_versao, out total_proc;
+  else
+    select sum(((pcpcaprecurso.tempo_acerto/decode(nvl(pcpcaprecurso.quantidade_media_producao, 1), 0, 1, 
+                                                   nvl(pcpcaprecurso.quantidade_media_producao, 1))) + pcpcaprecurso.minutos_unidade) * 
+              decode(pcprecurso.custo_hora,0,pcpetapa.custo_hora,pcprecurso.custo_hora)) 
+      into total_proc
+      from pcpversao, pcpcapetapa, pcpcaprecurso, pcprecurso, pcpetapa
+     where pcpversao.empresa = v_empresa
+       and pcpversao.produto = v_item
+       and pcpversao.versao  = v_versao
+       and pcpversao.empresa = pcpcapetapa.empresa
+       and pcpversao.class_carga_rec = pcpcapetapa.class_carga_recurso
+       and pcpcapetapa.empresa = pcpcaprecurso.empresa
+     and pcpcapetapa.class_carga_recurso = pcpcaprecurso.class_carga_recurso
+     and pcpcapetapa.etapa = pcpcaprecurso.etapa
+     and pcpcaprecurso.recurso_padrao = 'S'
+       and pcpcaprecurso.empresa = pcprecurso.empresa
+       and pcpcaprecurso.recurso = pcprecurso.codigo
+       and pcpcapetapa.empresa = pcpetapa.empresa
+       and pcpcapetapa.etapa = pcpetapa.codigo;
+
+    if nvl(total_proc,0) = 0 then
+      --Total do custo com o processo pelas etapas
+      select nvl(sum(((pcpcapetapa.tempo_acerto/decode(nvl(pcpcapetapa.quantidade_media_producao, 1), 0, 1, 
+                                                       nvl(pcpcapetapa.quantidade_media_producao, 1))) + pcpcapetapa.minutos_unidade) * 
+                     pcpetapa.custo_hora),0) 
+        into total_proc
+        from pcpversao, pcpcapetapa, pcpetapa
+       where pcpversao.empresa = v_empresa
+         and pcpversao.produto = v_item
+         and pcpversao.versao  = v_versao
+         and pcpversao.empresa = pcpcapetapa.empresa
+         and pcpversao.class_carga_rec = pcpcapetapa.class_carga_recurso
+       and pcpcapetapa.empresa = pcpetapa.empresa
+       and pcpcapetapa.etapa = pcpetapa.codigo;
+    end if;
+  end if;
+
+  --Total do custo com servicos adicionais
+  select count(*) into v_tem
+    from fpvfpformula
+   where empresa = v_empresa
+     and campo_origem = 'total_sa';
+
+  v_tipo := 'C';
+  if v_tem > 0 then
+    select tipo into v_tipo
+      from fpvfpformula
+     where empresa = v_empresa
+       and campo_origem = 'total_sa';
+  end if;
+
+  --Se for formula do tipo SQL
+  if v_tipo = 'S' then
+       
+    select asdcomando.comando_sql into v_formula
+      from fpvfpformula, asdcomando
+     where fpvfpformula.empresa = v_empresa
+       and asdcomando.comando = fpvfpformula.comando_dinamico
+       and fpvfpformula.campo_origem = 'total_sa';            
+
+    execute immediate v_formula using v_empresa, 1, v_item, v_versao, out total_sa;
+  else
+    select nvl(sum(pcpversaoserv.valor * pcpversaoserv.coeficiente_acrescimo),0) into total_sa
+      from pcpversaoserv
+     where pcpversaoserv.empresa = v_empresa
+       and pcpversaoserv.produto = v_item
+       and pcpversaoserv.versao  = v_versao;
+  end if;
+
+  --Total do custo com acessorios
+  select count(*) into v_tem
+    from fpvfpformula
+   where empresa = v_empresa
+     and campo_origem = 'total_acess_rateado';
+
+  v_tipo := 'C';
+  if v_tem > 0 then
+    select tipo into v_tipo
+      from fpvfpformula
+     where empresa = v_empresa
+       and campo_origem = 'total_acess_rateado';
+  end if;
+
+  --Se for formula do tipo SQL
+  if v_tipo = 'S' then
+      
+    select asdcomando.comando_sql into v_formula
+      from fpvfpformula, asdcomando
+     where fpvfpformula.empresa = v_empresa
+       and asdcomando.comando = fpvfpformula.comando_dinamico
+       and fpvfpformula.campo_origem = 'total_acess_rateado';           
+
+    execute immediate v_formula using v_empresa, 1, v_item, v_versao, out total_acess_rateado;
+  else
+    select nvl(sum(nvl(pcpitemace.preco_unitario, pcpacessorio.valor)),0) into total_acess_rateado
+      from pcpitemace, pcpacessorio
+     where pcpitemace.empresa = v_empresa
+       and pcpitemace.produto = v_item
+       and pcpitemace.versao  = v_versao
+       and pcpitemace.empresa = pcpacessorio.empresa
+       and pcpitemace.acessorio = pcpacessorio.codigo
+       and pcpitemace.padrao_fp = 'S'
+     order by pcpitemace.sequencia;
+  end if;
+  
+  --Se for informado um grupo de despesas, ignora o que esta cadastrado no item ou como padr?o para formac?o de precos
+  if v_grupo_despesas is null then
+    --Total com despesas adicionais do tipo valor fixo (padr?o para formac?o de precos)
+    select nvl(sum(valor),0) into total_vf
+      from fpvgrutpdespadicit, fpvgrutpdespadic, fpvtpdespadic
+     where fpvgrutpdespadic.empresa = v_empresa
+       and fpvgrutpdespadic.padrao_fp = 'S'
+       and fpvgrutpdespadic.empresa = fpvgrutpdespadicit.empresa
+       and fpvgrutpdespadic.codigo = fpvgrutpdespadicit.grupo
+       and fpvgrutpdespadicit.empresa = fpvtpdespadic.empresa
+       and fpvgrutpdespadicit.tipo_custo = fpvtpdespadic.tipo_custo
+       and fpvgrutpdespadicit.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.tipo_valor = 'M';
+
+    --Total com despesas adicionais do tipo percentual sobre o lucro (padr?o para formac?o de precos)
+    select nvl(sum(valor),0) into total_pl
+      from fpvgrutpdespadicit, fpvgrutpdespadic, fpvtpdespadic
+     where fpvgrutpdespadic.empresa = v_empresa
+       and fpvgrutpdespadic.padrao_fp = 'S'
+       and fpvgrutpdespadic.empresa = fpvgrutpdespadicit.empresa
+       and fpvgrutpdespadic.codigo = fpvgrutpdespadicit.grupo
+       and fpvgrutpdespadicit.empresa = fpvtpdespadic.empresa
+       and fpvgrutpdespadicit.tipo_custo = fpvtpdespadic.tipo_custo
+       and fpvgrutpdespadicit.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.tipo_valor = 'P'
+       and fpvtpdespadic.incidencia = 'L';
+
+    --Total com despesas adicionais do tipo percentual sobre o preco de venda (padr?o para formac?o de precos)
+    select nvl(sum(valor),0) into total_ppv
+      from fpvgrutpdespadicit, fpvgrutpdespadic, fpvtpdespadic
+     where fpvgrutpdespadic.empresa = v_empresa
+       and fpvgrutpdespadic.padrao_fp = 'S'
+       and fpvgrutpdespadic.empresa = fpvgrutpdespadicit.empresa
+       and fpvgrutpdespadic.codigo = fpvgrutpdespadicit.grupo
+       and fpvgrutpdespadicit.empresa = fpvtpdespadic.empresa
+       and fpvgrutpdespadicit.tipo_custo = fpvtpdespadic.tipo_custo
+       and fpvgrutpdespadicit.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.tipo_valor = 'P'
+       and fpvtpdespadic.incidencia = 'V';
+
+    --Total com despesas adicionais do tipo percentual sobre o custo (padr?o para formac?o de precos)
+    select nvl(sum(valor),0) into total_pc
+      from fpvgrutpdespadicit, fpvgrutpdespadic, fpvtpdespadic
+     where fpvgrutpdespadic.empresa = v_empresa
+       and fpvgrutpdespadic.padrao_fp = 'S'
+       and fpvgrutpdespadic.empresa = fpvgrutpdespadicit.empresa
+       and fpvgrutpdespadic.codigo = fpvgrutpdespadicit.grupo
+       and fpvgrutpdespadicit.empresa = fpvtpdespadic.empresa
+       and fpvgrutpdespadicit.tipo_custo = fpvtpdespadic.tipo_custo
+       and fpvgrutpdespadicit.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.tipo_valor = 'P'
+       and fpvtpdespadic.incidencia = 'C';
+
+    --Total com despesas adicionais do tipo percentual sobre o custo final de venda (padr?o para formac?o de precos)
+    select nvl(sum(valor),0) into total_pf
+      from fpvgrutpdespadicit, fpvgrutpdespadic, fpvtpdespadic
+     where fpvgrutpdespadic.empresa = v_empresa
+       and fpvgrutpdespadic.padrao_fp = 'S'
+       and fpvgrutpdespadic.empresa = fpvgrutpdespadicit.empresa
+       and fpvgrutpdespadic.codigo = fpvgrutpdespadicit.grupo
+       and fpvgrutpdespadicit.empresa = fpvtpdespadic.empresa
+       and fpvgrutpdespadicit.tipo_custo = fpvtpdespadic.tipo_custo
+       and fpvgrutpdespadicit.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.tipo_valor = 'P'
+       and fpvtpdespadic.incidencia = 'F';
+
+    --Total com despesas adicionais do tipo valor fixo (despesas fixas do item)
+    select nvl(sum(valor * coeficiente_acrescimo),0) into total_vf
+      from pcpversaodespadic
+     where empresa = v_empresa
+       and produto = v_item
+       and versao  = v_versao
+       and tipo_valor = 'M';
+
+    --Total com despesas adicionais do tipo percentual sobre o lucro (despesas fixas do item)
+    select nvl(sum(valor * coeficiente_acrescimo),0) into total_pl
+      from pcpversaodespadic, fpvtpdespadic
+     where pcpversaodespadic.empresa = v_empresa
+       and pcpversaodespadic.produto = v_item
+       and pcpversaodespadic.versao  = v_versao
+       and pcpversaodespadic.tipo_valor = 'P'
+       and pcpversaodespadic.empresa = fpvtpdespadic.empresa
+       and pcpversaodespadic.tipo_custo = fpvtpdespadic.tipo_custo
+       and pcpversaodespadic.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.incidencia = 'L';
+
+    --Total com despesas adicionais do tipo percentual sobre o preco de venda (despesas fixas do item)
+    select nvl(sum(valor * coeficiente_acrescimo),0) into total_ppv
+      from pcpversaodespadic, fpvtpdespadic
+     where pcpversaodespadic.empresa = v_empresa
+       and pcpversaodespadic.produto = v_item
+       and pcpversaodespadic.versao  = v_versao
+       and pcpversaodespadic.tipo_valor = 'P'
+       and pcpversaodespadic.empresa = fpvtpdespadic.empresa
+       and pcpversaodespadic.tipo_custo = fpvtpdespadic.tipo_custo
+       and pcpversaodespadic.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.incidencia = 'V';
+
+    --Total com despesas adicionais do tipo percentual sobre o custo (despesas fixas do item)
+    select nvl(sum(valor * coeficiente_acrescimo),0) into total_pc
+      from pcpversaodespadic, fpvtpdespadic
+     where pcpversaodespadic.empresa = v_empresa
+       and pcpversaodespadic.produto = v_item
+       and pcpversaodespadic.versao  = v_versao
+       and pcpversaodespadic.tipo_valor = 'P'
+       and pcpversaodespadic.empresa = fpvtpdespadic.empresa
+       and pcpversaodespadic.tipo_custo = fpvtpdespadic.tipo_custo
+       and pcpversaodespadic.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.incidencia = 'C';
+
+    --Total com despesas adicionais do tipo percentual sobre o preco final (despesas fixas do item)
+    select nvl(sum(valor * coeficiente_acrescimo),0) into total_pf
+      from pcpversaodespadic, fpvtpdespadic
+     where pcpversaodespadic.empresa = v_empresa
+       and pcpversaodespadic.produto = v_item
+       and pcpversaodespadic.versao  = v_versao
+       and pcpversaodespadic.tipo_valor = 'P'
+       and pcpversaodespadic.empresa = fpvtpdespadic.empresa
+       and pcpversaodespadic.tipo_custo = fpvtpdespadic.tipo_custo
+       and pcpversaodespadic.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.incidencia = 'F';
+  else
+
+    --Total com despesas adicionais do tipo valor fixo (padr?o para formac?o de precos)
+    select nvl(sum(valor),0) into total_vf
+      from fpvgrutpdespadicit, fpvgrutpdespadic, fpvtpdespadic
+     where fpvgrutpdespadic.empresa = v_empresa
+       and fpvgrutpdespadic.codigo = v_grupo_despesas
+       and fpvgrutpdespadic.empresa = fpvgrutpdespadicit.empresa
+       and fpvgrutpdespadic.codigo = fpvgrutpdespadicit.grupo
+       and fpvgrutpdespadicit.empresa = fpvtpdespadic.empresa
+       and fpvgrutpdespadicit.tipo_custo = fpvtpdespadic.tipo_custo
+       and fpvgrutpdespadicit.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.tipo_valor = 'M';
+
+    --Total com despesas adicionais do tipo percentual sobre o lucro (padr?o para formac?o de precos)
+    select nvl(sum(valor),0) into total_pl
+      from fpvgrutpdespadicit, fpvgrutpdespadic, fpvtpdespadic
+     where fpvgrutpdespadic.empresa = v_empresa
+       and fpvgrutpdespadic.codigo = v_grupo_despesas
+       and fpvgrutpdespadic.empresa = fpvgrutpdespadicit.empresa
+       and fpvgrutpdespadic.codigo = fpvgrutpdespadicit.grupo
+       and fpvgrutpdespadicit.empresa = fpvtpdespadic.empresa
+       and fpvgrutpdespadicit.tipo_custo = fpvtpdespadic.tipo_custo
+       and fpvgrutpdespadicit.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.tipo_valor = 'P'
+       and fpvtpdespadic.incidencia = 'L';
+
+    --Total com despesas adicionais do tipo percentual sobre o preco de venda (padr?o para formac?o de precos)
+    select nvl(sum(valor),0) into total_ppv
+      from fpvgrutpdespadicit, fpvgrutpdespadic, fpvtpdespadic
+     where fpvgrutpdespadic.empresa = v_empresa
+       and fpvgrutpdespadic.codigo = v_grupo_despesas
+       and fpvgrutpdespadic.empresa = fpvgrutpdespadicit.empresa
+       and fpvgrutpdespadic.codigo = fpvgrutpdespadicit.grupo
+       and fpvgrutpdespadicit.empresa = fpvtpdespadic.empresa
+       and fpvgrutpdespadicit.tipo_custo = fpvtpdespadic.tipo_custo
+       and fpvgrutpdespadicit.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.tipo_valor = 'P'
+       and fpvtpdespadic.incidencia = 'V';
+
+    --Total com despesas adicionais do tipo percentual sobre o custo (padr?o para formac?o de precos)
+    select nvl(sum(valor),0) into total_pc
+      from fpvgrutpdespadicit, fpvgrutpdespadic, fpvtpdespadic
+     where fpvgrutpdespadic.empresa = v_empresa
+       and fpvgrutpdespadic.codigo = v_grupo_despesas
+       and fpvgrutpdespadic.empresa = fpvgrutpdespadicit.empresa
+       and fpvgrutpdespadic.codigo = fpvgrutpdespadicit.grupo
+       and fpvgrutpdespadicit.empresa = fpvtpdespadic.empresa
+       and fpvgrutpdespadicit.tipo_custo = fpvtpdespadic.tipo_custo
+       and fpvgrutpdespadicit.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.tipo_valor = 'P'
+       and fpvtpdespadic.incidencia = 'C';
+
+    --Total com despesas adicionais do tipo percentual sobre o custo final de venda (padr?o para formac?o de precos)
+    select nvl(sum(valor),0) into total_pf
+      from fpvgrutpdespadicit, fpvgrutpdespadic, fpvtpdespadic
+     where fpvgrutpdespadic.empresa = v_empresa
+       and fpvgrutpdespadic.codigo = v_grupo_despesas
+       and fpvgrutpdespadic.empresa = fpvgrutpdespadicit.empresa
+       and fpvgrutpdespadic.codigo = fpvgrutpdespadicit.grupo
+       and fpvgrutpdespadicit.empresa = fpvtpdespadic.empresa
+       and fpvgrutpdespadicit.tipo_custo = fpvtpdespadic.tipo_custo
+       and fpvgrutpdespadicit.codigo_quebra = fpvtpdespadic.codigo_quebra
+       and fpvtpdespadic.tipo_valor = 'P'
+       and fpvtpdespadic.incidencia = 'F';
+       
+  end if;
+  --Executa as formulas conforme sequencia de calculo definida
+  for v_contador in 1..3 loop
+   -- open c_formula;
+   -- loop
+    --  fetch c_formula into v_campo, v_formula, v_campo_origem;
+    --  exit when c_formula%notfound;
+    
+    for r_formula in (select fpvfpformula.campo, fpvfpformula.campo_origem, asdcomando.comando_sql formula
+                            from fpvfpformula, asdcomando
+                           where fpvfpformula.empresa = v_empresa
+                             and asdcomando.comando = fpvfpformula.comando_dinamico
+                           order by sequencia_calculo)  
+                           
+    loop                       
+      
+      v_campo := r_formula.campo;
+      v_campo_origem := r_formula.campo_origem;
+      v_formula := r_formula.formula;
+
+      select decode(v_campo_origem, null, replace(v_formula,':',''), v_campo_origem) into v_formula
+        from dual;
+
+      select replace(replace(replace(replace(replace(
+             replace(replace(replace(replace(replace(
+             replace(replace(replace(replace(replace(replace(
+             replace(replace(replace(replace(replace(replace(
+             replace(replace(replace(replace(replace(replace(
+             replace(replace(replace(replace(replace(replace(
+             replace(lower(v_formula),'total_mp',decode(v_contador,3,total_mp,2,total_mp_medio,total_mp_rep)),
+                               'total_ic',decode(v_contador,3,total_ic,2,total_ic_medio,total_ic_rep)),
+                               'total_proc',total_proc),
+                               'total_acess_rateado',total_acess_rateado),
+                               'total_sa',total_sa),
+                               'total_ppv',total_ppv),
+                               'total_pl',total_pl),
+                               'total_vf',total_vf),
+                               'total_pc',total_pc),
+                               'total_pf',total_pf),
+                               'mll',mll),
+                               'pv',pv),
+                               'mlb',mlb),
+                               'ctmp',ctmp),
+                               'ctsa',ctsa),
+                               'ctic',ctic),
+                               'ctpp',ctpp),
+                               'ctp',ctp),
+                               'cta',cta),
+                               'ctf',ctf),
+                               'pdap',pdap),
+                               'dap',dap),
+                               'vdaf',vdaf),
+                               'dap',dap),
+                               'pdal',pdal),
+                               'pdac',pdac),
+                               'pvfc',pvf),
+                               'dac',dac),
+                               'ctb',ctb),
+                               'lb',lb),
+                               'dal',dal),
+                               'll',ll),
+                               'caven',caven),
+                               'quantidade',quantidade),',','.') into v_formula
+         from dual;
+
+      begin
+        if v_campo = 'CTMP' then
+          execute immediate 'select '||v_formula||' from dual' into ctmp;
+        elsif v_campo ='CTP' then
+          execute immediate 'select '||v_formula||' from dual' into ctp;
+        elsif v_campo ='CTSA' then
+          execute immediate 'select '||v_formula||' from dual' into ctsa;
+        elsif v_campo ='CTIC' then
+          execute immediate 'select '||v_formula||' from dual' into ctic;
+        elsif v_campo ='CTPP' then
+          execute immediate 'select '||v_formula||' from dual' into ctpp;
+        elsif v_campo ='PDAL' then
+          execute immediate 'select '||v_formula||' from dual' into pdal;
+        elsif v_campo ='PDAP' then
+          execute immediate 'select '||v_formula||' from dual' into pdap;
+        elsif v_campo ='VDAF' then
+          execute immediate 'select '||v_formula||' from dual' into vdaf;
+        elsif v_campo ='PDAC' then
+          execute immediate 'select '||v_formula||' from dual' into pdac;
+        elsif v_campo ='DAC' then
+          execute immediate 'select '||v_formula||' from dual' into dac;
+        elsif v_campo ='CTA' then
+          execute immediate 'select '||v_formula||' from dual' into cta;
+        elsif v_campo ='CTF' then
+          execute immediate 'select '||v_formula||' from dual' into ctf;
+        elsif v_campo ='DAP' then
+          execute immediate 'select '||v_formula||' from dual' into dap;
+        elsif v_campo ='CTB' then
+          execute immediate 'select '||v_formula||' from dual' into ctb;
+        elsif v_campo ='PV' then
+          execute immediate 'select '||v_formula||' from dual' into pv;
+        elsif v_campo ='LB' then
+          execute immediate 'select '||v_formula||' from dual' into lb;
+        elsif v_campo ='MLB' then
+          execute immediate 'select '||v_formula||' from dual' into mlb;
+        elsif v_campo ='DAL' then
+          execute immediate 'select '||v_formula||' from dual' into dal;
+        elsif v_campo ='LL' then
+          execute immediate 'select '||v_formula||' from dual' into ll;
+        elsif v_campo ='PVF' then
+          execute immediate 'select '||v_formula||' from dual' into pvf;
+        elsif v_campo ='CAVEN' then
+          execute immediate 'select '||v_formula||' from dual' into caven;          
+        end if;
+      exception
+        when others then
+          util.incluir_log_long('COMERCIAL', sysdate, 'CALCULO_FP', 'Erro executanto fórmula: '||v_campo,'Fórmula executada: '||v_formula||chr(10)|| 'Erro: '|| sqlerrm||dbms_utility.format_error_backtrace,'S');
+          null;
+      end;
+
+      v_formula := null;
+
+    end loop;
+  --  close c_formula;
+
+    --Grava o custo calculado pelo custo medio das MP's
+    if v_contador = 3 then
+      ctb_calc := ctb;
+    elsif v_contador = 2 then
+      ctb_medio := ctb;
+    elsif v_contador = 1 then
+      ctb_rep := ctb;    
+    end if;
+    
+  end loop;
+
+  --Atualiza valores calculados para o item/vers?o
+  if v_tabela_preco is null then
+
+	BEGIN
+	  update pcpversao
+		 set custo_calculado           = decode(ctb_calc,0,custo_calculado,ctb_calc),
+			 custo_calculado_medio     = decode(ctb_medio,0,custo_calculado_medio,ctb_medio),
+			 custo_calculado_reposicao = decode(ctb_rep,0,custo_calculado_reposicao,ctb_rep),
+			 preco_venda               = decode(pvf,0,preco_venda,pvf),
+			 ult_data_orcada           = sysdate
+	   where empresa = v_empresa
+		 and produto = v_item
+		 and versao  = v_versao;
+	EXCEPTION
+	  WHEN OTHERS THEN
+		NULL;
+	END;
+  end if;
+  --Verifica se e para atualizar tabelas de precos
+  if v_tabela_preco is not null then
+
+    select situacao into v_situacao
+      from estitem
+     where empresa = v_empresa
+       and codigo  = v_item;
+       
+    select decimais_unitario into v_decimais
+      from venparametros
+     where empresa = v_empresa;
+     
+    select count(*) into v_tem
+      from cadtabelaprecoit
+     where empresa = v_empresa
+       and codigo  = v_tabela_preco
+       and item    = v_item
+       and versao  = v_versao;
+
+    if v_tem = 0 and v_inclui_tabela = 'S' and v_situacao = 'A' then
+      insert into cadtabelaprecoit (empresa,
+                                    codigo,
+                                    item,
+                                    unitario,
+                                    unitario_prazo,
+                                    versao,
+                                    preco_minimo,
+                                    data_atualizacao,
+                                    id_moeda)values (v_empresa, 
+                                                     v_tabela_preco,
+                                                     v_item, 
+                                                     round( nvl(pvf, 0) / nvl(v_valor_moeda,1),v_decimais), 
+                                                     0, 
+                                                     v_versao, 
+                                                     0, 
+                                                     sysdate, 
+                                                     1);
+    elsif v_tem > 0 and v_situacao = 'A' then
+      update cadtabelaprecoit
+         set unitario = round(decode(nvl(pvf, 0), 0 , unitario,  nvl(pvf, 0) / nvl(v_valor_moeda,1)), v_decimais),
+             data_atualizacao = sysdate 
+       where empresa  = v_empresa
+         and codigo   = v_tabela_preco
+         and item     = v_item
+         and versao   = v_versao;
+    end if;
+
+  end if;
+  
+  commit;
+
+exception
+  when others then
+    util.incluir_log_long('COMERCIAL', sysdate, 'CALCULO_FP', '1Erro', '1Erro: '|| sqlerrm||dbms_utility.format_error_backtrace,'S');
+    raise;
+end;
